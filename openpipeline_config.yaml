@@ -228,9 +228,9 @@ processing:
           - "llm.token_count.completion_details.audio"
           - "llm.token_count.completion_details.reasoning"
           - "llm.input_messages.0.message.role"
-          - "llm.input_messages.0.message.content"
+          - "llm.input_messages.0.message.contents.0.text"
           - "llm.output_messages.0.message.role"
-          - "llm.output_messages.0.message.content"
+          - "llm.output_messages.0.message.contents.0.text"
           - "input.mime_type"
           - "output.mime_type"
 
@@ -246,14 +246,16 @@ processing:
           | fieldsRemove `input.value`, `output.value`
 
     # 16. Extract system prompt from first input message
+    # Google ADK (and other multi-part content instrumentations) store message text at
+    # llm.input_messages.{i}.message.contents.{j}.text, not .message.content.
     - id: "openinference-system-instructions"
       enabled: true
       matcher: "isNotNull(`llm.input_messages.0.message.role`)"
       type: "dql"
-      description: "Extract system message into gen_ai.system_instructions"
+      description: "Extract system message into gen_ai.system_instructions (multi-part content path)"
       dql:
         script: |
           fieldsAdd `gen_ai.system_instructions` = if(
             `llm.input_messages.0.message.role` == "system",
-            `llm.input_messages.0.message.content`
+            `llm.input_messages.0.message.contents.0.text`
           )
