@@ -227,8 +227,6 @@ processing:
           - "llm.token_count.prompt_details.cache_write"
           - "llm.token_count.completion_details.audio"
           - "llm.token_count.completion_details.reasoning"
-          - "llm.input_messages.0.message.role"
-          - "llm.input_messages.0.message.contents.0.text"
           - "llm.output_messages.0.message.role"
           - "llm.output_messages.0.message.contents.0.text"
           - "input.mime_type"
@@ -245,17 +243,30 @@ processing:
           fieldsAdd `gen_ai.input.messages` = `input.value`, `gen_ai.output.messages` = `output.value`
           | fieldsRemove `input.value`, `output.value`
 
-    # 16. Extract system prompt from first input message
+    # 16. Map input message[0] to gen_ai.prompt.0.* (role + content)
     # Google ADK (and other multi-part content instrumentations) store message text at
     # llm.input_messages.{i}.message.contents.{j}.text, not .message.content.
-    - id: "openinference-system-instructions"
+    - id: "openinference-prompt-message-mapping"
       enabled: true
       matcher: "isNotNull(`llm.input_messages.0.message.role`)"
+      type: "fieldsRename"
+      description: "Map OpenInference first input message to gen_ai.prompt.0.role / gen_ai.prompt.0.content"
+      fieldsRename:
+        fields:
+          - fromName: "llm.input_messages.0.message.role"
+            toName: "gen_ai.prompt.0.role"
+          - fromName: "llm.input_messages.0.message.contents.0.text"
+            toName: "gen_ai.prompt.0.content"
+
+    # 16b. Extract system prompt from gen_ai.prompt.0 into gen_ai.system_instructions
+    - id: "openinference-system-instructions"
+      enabled: true
+      matcher: "isNotNull(`gen_ai.prompt.0.role`)"
       type: "dql"
-      description: "Extract system message into gen_ai.system_instructions (multi-part content path)"
+      description: "Copy system message content into gen_ai.system_instructions"
       dql:
         script: |
           fieldsAdd `gen_ai.system_instructions` = if(
-            `llm.input_messages.0.message.role` == "system",
-            `llm.input_messages.0.message.contents.0.text`
+            `gen_ai.prompt.0.role` == "system",
+            `gen_ai.prompt.0.content`
           )
