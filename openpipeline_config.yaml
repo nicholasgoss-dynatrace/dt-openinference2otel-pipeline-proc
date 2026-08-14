@@ -232,6 +232,38 @@ processing:
           - "input.mime_type"
           - "output.mime_type"
 
+    # 13. Extract gen_ai.prompt.0.* from Google ADK input.value JSON blob
+    # Google ADK OpenInference stores the full request as a JSON string in input.value.
+    # Structure: {"new_message": {"parts": [{"text": "..."}], "role": "user"}, ...}
+    # Must run before step 15 which removes input.value.
+    - id: "openinference-extract-prompt-from-input-value"
+      enabled: true
+      matcher: "isNotNull(`input.value`)"
+      type: "dql"
+      description: "Parse input.value JSON and extract gen_ai.prompt.0.role / gen_ai.prompt.0.content"
+      dql:
+        script: |
+          parse `input.value`, "JSON:_input"
+          | fieldsAdd `gen_ai.prompt.0.role` = `_input`[`new_message`][`role`],
+                      `gen_ai.prompt.0.content` = `_input`[`new_message`][`parts`][0][`text`]
+          | fieldsRemove `_input`
+
+    # 14. Extract gen_ai.completion.0.* from Google ADK output.value JSON blob
+    # Structure: {"content": {"parts": [{"text": "..."}], "role": "model"}, "finish_reason": "STOP", ...}
+    # Must run before step 15 which removes output.value.
+    - id: "openinference-extract-completion-from-output-value"
+      enabled: true
+      matcher: "isNotNull(`output.value`)"
+      type: "dql"
+      description: "Parse output.value JSON and extract gen_ai.completion.0.role / gen_ai.completion.0.content"
+      dql:
+        script: |
+          parse `output.value`, "JSON:_output"
+          | fieldsAdd `gen_ai.completion.0.role` = `_output`[`content`][`role`],
+                      `gen_ai.completion.0.content` = `_output`[`content`][`parts`][0][`text`],
+                      `gen_ai.response.finish_reasons` = if(isNull(`gen_ai.response.finish_reasons`), `_output`[`finish_reason`])
+          | fieldsRemove `_output`
+
     # 15. Map input.value/output.value to gen_ai.* for Prompts list view
     - id: "openinference-input-output-fallback"
       enabled: true
@@ -243,12 +275,12 @@ processing:
           fieldsAdd `gen_ai.input.messages` = `input.value`, `gen_ai.output.messages` = `output.value`
           | fieldsRemove `input.value`, `output.value`
 
-    # 16. Map input message[0] to gen_ai.prompt.0.* (role + content)
-    # Google ADK (and other multi-part content instrumentations) store message text at
-    # llm.input_messages.{i}.message.contents.{j}.text, not .message.content.
+    # 16. Map input message[0] to gen_ai.prompt.0.* (role + content) for non-ADK instrumentations
+    # that use flat llm.input_messages.{i}.message.contents.{j}.text paths.
+    # Skipped when gen_ai.prompt.0.role is already populated (e.g. by step 13).
     - id: "openinference-prompt-message-mapping"
       enabled: true
-      matcher: "isNotNull(`llm.input_messages.0.message.role`)"
+      matcher: "isNotNull(`llm.input_messages.0.message.role`) AND isNull(`gen_ai.prompt.0.role`)"
       type: "fieldsRename"
       description: "Map OpenInference first input message to gen_ai.prompt.0.role / gen_ai.prompt.0.content"
       fieldsRename:

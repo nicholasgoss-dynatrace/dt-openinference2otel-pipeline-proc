@@ -26,8 +26,13 @@ The pipeline performs the following transforms:
 | `llm.prompt_template.template` | → | `gen_ai.prompt.template` |
 | `llm.prompt_template.variables` | → | `gen_ai.prompt.template.variables` |
 | `llm.prompt_template.version` | → | `gen_ai.prompt.template.version` |
-| `llm.input_messages.0.message.role` | → | `gen_ai.prompt.0.role` |
-| `llm.input_messages.0.message.contents.0.text` | → | `gen_ai.prompt.0.content` |
+| `input.value` (`.new_message.role`) | → | `gen_ai.prompt.0.role` |
+| `input.value` (`.new_message.parts[0].text`) | → | `gen_ai.prompt.0.content` |
+| `output.value` (`.content.role`) | → | `gen_ai.completion.0.role` |
+| `output.value` (`.content.parts[0].text`) | → | `gen_ai.completion.0.content` |
+| `output.value` (`.finish_reason`) | → | `gen_ai.response.finish_reasons` (fallback) |
+| `llm.input_messages.0.message.role` | → | `gen_ai.prompt.0.role` (non-ADK fallback) |
+| `llm.input_messages.0.message.contents.0.text` | → | `gen_ai.prompt.0.content` (non-ADK fallback) |
 | `input.value` / `output.value` | → | `gen_ai.input.messages` / `gen_ai.output.messages` |
 
 It also tags every matched span with `ai.observability.source = "openinference"` and removes the now-redundant OpenInference source attributes.
