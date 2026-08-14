@@ -23,6 +23,9 @@ The pipeline performs the following transforms:
 | `agent.name` | → | `gen_ai.agent.name` |
 | `tool.name` / `tool.description` | → | `gen_ai.tool.*` |
 | `validator_name` | → | `gen_ai.guardrail.name` |
+| `llm.prompt_template.template` | → | `gen_ai.prompt.template` |
+| `llm.prompt_template.variables` | → | `gen_ai.prompt.template.variables` |
+| `llm.prompt_template.version` | → | `gen_ai.prompt.template.version` |
 | `input.value` / `output.value` | → | `gen_ai.input.messages` / `gen_ai.output.messages` |
 
 It also tags every matched span with `ai.observability.source = "openinference"` and removes the now-redundant OpenInference source attributes.

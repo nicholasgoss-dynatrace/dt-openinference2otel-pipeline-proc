@@ -183,6 +183,21 @@ processing:
           - fromName: "validator_name"
             toName: "gen_ai.guardrail.name"
 
+    # 11c. Map prompt template attributes to gen_ai.prompt.template.*
+    - id: "openinference-prompt-template"
+      enabled: true
+      matcher: "isNotNull(`llm.prompt_template.template`) OR isNotNull(`llm.prompt_template.variables`) OR isNotNull(`llm.prompt_template.version`)"
+      type: "fieldsRename"
+      description: "Map OpenInference prompt template attributes to gen_ai.prompt.template.*"
+      fieldsRename:
+        fields:
+          - fromName: "llm.prompt_template.template"
+            toName: "gen_ai.prompt.template"
+          - fromName: "llm.prompt_template.variables"
+            toName: "gen_ai.prompt.template.variables"
+          - fromName: "llm.prompt_template.version"
+            toName: "gen_ai.prompt.template.version"
+
     # 12. Tag source SDK
     - id: "openinference-source-metadata"
       enabled: true
@@ -203,6 +218,9 @@ processing:
         fields:
           - "openinference.span.kind"
           - "llm.invocation_parameters"
+          - "llm.prompt_template.template"
+          - "llm.prompt_template.variables"
+          - "llm.prompt_template.version"
           - "llm.token_count.total"
           - "llm.token_count.prompt_details.audio"
           - "llm.token_count.prompt_details.cache_read"
