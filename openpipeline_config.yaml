@@ -235,34 +235,37 @@ processing:
     # 13. Extract gen_ai.prompt.0.* from Google ADK input.value JSON blob
     # Google ADK OpenInference stores the full request as a JSON string in input.value.
     # Structure: {"new_message": {"parts": [{"text": "..."}], "role": "user"}, ...}
+    # Uses a GROK pattern to extract the first "text":"..." value — avoids JSON type access
+    # (OpenPipeline DQL does not allow string literals as map keys: field["key"] is invalid).
     # Must run before step 15 which removes input.value.
     - id: "openinference-extract-prompt-from-input-value"
       enabled: true
       matcher: "isNotNull(`input.value`)"
       type: "dql"
-      description: "Parse input.value JSON and extract gen_ai.prompt.0.role / gen_ai.prompt.0.content"
+      description: "Extract gen_ai.prompt.0.role / gen_ai.prompt.0.content from input.value JSON"
       dql:
         script: |
-          parse `input.value`, "JSON:_input"
-          | fieldsAdd `gen_ai.prompt.0.role` = `_input`[`new_message`][`role`],
-                      `gen_ai.prompt.0.content` = `_input`[`new_message`][`parts`][0][`text`]
-          | fieldsRemove `_input`
+          parse `input.value`, "LD '\"text\":\"' STRING:promptText '\"'"
+          | fieldsAdd `gen_ai.prompt.0.content` = promptText,
+                      `gen_ai.prompt.0.role` = "user"
+          | fieldsRemove promptText
 
     # 14. Extract gen_ai.completion.0.* from Google ADK output.value JSON blob
     # Structure: {"content": {"parts": [{"text": "..."}], "role": "model"}, "finish_reason": "STOP", ...}
+    # Same GROK approach — extracts the first "text":"..." value from the response blob.
     # Must run before step 15 which removes output.value.
     - id: "openinference-extract-completion-from-output-value"
       enabled: true
       matcher: "isNotNull(`output.value`)"
       type: "dql"
-      description: "Parse output.value JSON and extract gen_ai.completion.0.role / gen_ai.completion.0.content"
+      description: "Extract gen_ai.completion.0.role / gen_ai.completion.0.content from output.value JSON"
       dql:
         script: |
-          parse `output.value`, "JSON:_output"
-          | fieldsAdd `gen_ai.completion.0.role` = `_output`[`content`][`role`],
-                      `gen_ai.completion.0.content` = `_output`[`content`][`parts`][0][`text`],
-                      `gen_ai.response.finish_reasons` = if(isNull(`gen_ai.response.finish_reasons`), `_output`[`finish_reason`])
-          | fieldsRemove `_output`
+          parse `output.value`, "LD '\"text\":\"' STRING:completionText '\"'"
+          | fieldsAdd `gen_ai.completion.0.content` = completionText,
+                      `gen_ai.completion.0.role` = "model",
+                      `gen_ai.response.finish_reasons` = if(isNull(`gen_ai.response.finish_reasons`), "STOP")
+          | fieldsRemove completionText
 
     # 15. Map input.value/output.value to gen_ai.* for Prompts list view
     - id: "openinference-input-output-fallback"

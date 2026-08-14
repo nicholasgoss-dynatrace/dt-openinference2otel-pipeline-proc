@@ -100,6 +100,17 @@ def build_pipeline_payload(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _raise_with_body(resp: requests.Response) -> None:
+    """Like raise_for_status() but prints the response body before raising."""
+    if not resp.ok:
+        try:
+            detail = json.dumps(resp.json(), indent=2)
+        except Exception:
+            detail = resp.text
+        print(f"\n--- API error {resp.status_code} ---\n{detail}\n", file=sys.stderr)
+        resp.raise_for_status()
+
+
 def upsert_pipeline(
     endpoint: str, token: str, pipeline_value: dict[str, Any], dry_run: bool
 ) -> str | None:
@@ -129,14 +140,14 @@ def upsert_pipeline(
             json={"value": pipeline_value},
             timeout=30,
         )
-        resp.raise_for_status()
+        _raise_with_body(resp)
         print(f"Updated pipeline '{pipeline_value['customId']}' (objectId={obj_id})")
     else:
         url = f"{endpoint}/api/v2/settings/objects"
         resp = requests.post(
             url, headers=build_headers(token), json=payload, timeout=30
         )
-        resp.raise_for_status()
+        _raise_with_body(resp)
         created = resp.json()
         obj_id = created[0].get("objectId", "unknown") if created else "unknown"
         print(f"Created pipeline '{pipeline_value['customId']}' (objectId={obj_id})")
@@ -205,7 +216,7 @@ def upsert_routing_rule(
 
     url = f"{endpoint}/api/v2/settings/objects/{obj_id}"
     resp = requests.put(url, headers=build_headers(token), json={"value": value}, timeout=30)
-    resp.raise_for_status()
+    _raise_with_body(resp)
     print(f"{action} routing entry → pipeline objectId '{pipeline_obj_id}'")
 
 
@@ -218,7 +229,7 @@ def delete_pipeline(endpoint: str, token: str, pipeline_id: str) -> None:
     obj_id = existing["objectId"]
     url = f"{endpoint}/api/v2/settings/objects/{obj_id}"
     resp = requests.delete(url, headers=build_headers(token), timeout=30)
-    resp.raise_for_status()
+    _raise_with_body(resp)
     print(f"Deleted pipeline '{pipeline_id}' (objectId={obj_id})")
 
 
@@ -248,7 +259,7 @@ def delete_routing_rule(endpoint: str, token: str, pipeline_obj_id: str) -> None
 
     url = f"{endpoint}/api/v2/settings/objects/{obj_id}"
     resp = requests.put(url, headers=build_headers(token), json={"value": value}, timeout=30)
-    resp.raise_for_status()
+    _raise_with_body(resp)
     print("Removed routing entry.")
 
 
