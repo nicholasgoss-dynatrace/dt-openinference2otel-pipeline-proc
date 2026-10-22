@@ -1,307 +1,109 @@
 ---
-# OpenPipeline Pipeline Configuration: OpenInference → gen_ai.* attribute mapping
-# Schema: builtin:openpipeline.spans.pipelines
+# OpenPipeline configuration for OpenInference spans.
 #
-# Source: https://github.com/dynatrace-oss/dynatrace-ai-agent-instrumentation-examples/blob/main/openai/openinference/openpipeline-openinference.yaml
-# Docs:   https://docs.dynatrace.com/docs/observe/dynatrace-for-ai-observability/get-started/openinference#openinference-openpipeline
+# The app enables OPENINFERENCE_ENABLE_GENAI_SEMCONV=true, so OpenInference
+# emits gen_ai.* attributes natively. This pipeline does not normalize
+# OpenInference llm.* fields; it only derives metrics (and extracts Azure prompt
+# filter results when present).
 
 customId: "openinference-ai-spans"
-displayName: "OpenInference (Arize Phoenix) AI Observability - Spans"
+displayName: "OpenInference AI Observability - Spans"
 
 processing:
   processors:
-    # 1. Map OpenInference span kinds to gen_ai.operation.kind
-    - id: "openinference-operation-kind"
+    - id: "openinference-output-prompt-results"
       enabled: true
-      matcher: "true"
+      matcher: "isNotNull(output.value)"
       type: "dql"
-      description: "Map OpenInference span kinds to official gen_ai.operation.kind"
+      description: "Extract Azure prompt filter results from output.value JSON"
       dql:
         script: |
-          fieldsAdd gen_ai.operation.kind = if(openinference.span.kind == "CHAIN", "workflow",
-                                          else: if(openinference.span.kind == "TOOL", "tool",
-                                          else: if(openinference.span.kind == "AGENT", "agent",
-                                          else: if(openinference.span.kind == "RETRIEVER", "retrieval",
-                                          else: if(openinference.span.kind == "GUARDRAIL", "guardrail",
-                                          else: "task")))))
+          parse output.value, "JSON:output_value"
+          | fieldsAdd gen_ai.prompt.prompt_filter_results = toString(output_value[prompt_filter_results])
+          | fieldsRemove output_value
 
-    # 2. Set operation name to "chat" for LLM spans
-    - id: "openinference-llm-op-name"
+    - id: "openinference-duration-seconds"
       enabled: true
-      matcher: "isNotNull(llm.token_count.total) OR isNotNull(llm.model_name)"
-      type: "fieldsAdd"
-      description: "Set operation name to chat for LLM spans"
-      fieldsAdd:
-        fields:
-          - name: "gen_ai.operation.name"
-            value: "chat"
-
-    # 3. Map LLM model and provider attributes
-    - id: "openinference-llm-attributes"
-      enabled: true
-      matcher: "isNotNull(llm.token_count.total) OR isNotNull(llm.model_name)"
-      type: "fieldsRename"
-      description: "Map OpenInference LLM attributes to official gen_ai.*"
-      fieldsRename:
-        fields:
-          - fromName: "llm.model_name"
-            toName: "gen_ai.request.model"
-          - fromName: "llm.provider"
-            toName: "gen_ai.provider.name"
-
-    # 3b. Fallback: map llm.system to gen_ai.provider.name when llm.provider is absent
-    - id: "openinference-llm-system-fallback"
-      enabled: true
-      matcher: "isNotNull(llm.system)"
+      matcher: "isNotNull(`gen_ai.usage.input_tokens`) OR isNotNull(`gen_ai.usage.output_tokens`)"
       type: "dql"
-      description: "Fallback: map llm.system to gen_ai.provider.name when llm.provider is absent"
+      description: "Compute model-call duration in seconds"
       dql:
         script: |
-          fieldsAdd `gen_ai.provider.name` = if(isNull(`gen_ai.provider.name`), `llm.system`, else: `gen_ai.provider.name`)
-          | fieldsRemove `llm.system`
+          fieldsAdd duration_seconds = toDouble(duration) / 1000000000.0
 
-    # 4. Map token usage to gen_ai.usage.*
-    - id: "openinference-llm-usage"
+metricExtraction:
+  processors:
+    - id: "openinference-operation-duration-metric"
       enabled: true
-      matcher: "isNotNull(llm.token_count.total) OR isNotNull(llm.model_name)"
-      type: "fieldsRename"
-      description: "Map OpenInference token usage to official gen_ai.usage.*"
-      fieldsRename:
-        fields:
-          - fromName: "llm.token_count.prompt"
-            toName: "gen_ai.usage.input_tokens"
-          - fromName: "llm.token_count.completion"
-            toName: "gen_ai.usage.output_tokens"
-          - fromName: "llm.finish_reason"
-            toName: "gen_ai.response.finish_reasons"
+      matcher: "isNotNull(duration_seconds)"
+      type: "samplingAwareHistogramMetric"
+      description: "Extract gen_ai.client.operation.duration from OpenInference spans"
+      samplingAwareHistogramMetric:
+        metricKey: "gen_ai.client.operation.duration"
+        measurement: "field"
+        field: "duration_seconds"
+        aggregation: "enabled"
+        sampling: "enabled"
+        dimensions:
+          - extractionType: "field"
+            sourceFieldName: "service.name"
+          - extractionType: "field"
+            sourceFieldName: "gen_ai.operation.name"
+          - extractionType: "field"
+            sourceFieldName: "gen_ai.provider.name"
+          - extractionType: "field"
+            sourceFieldName: "gen_ai.request.model"
+          - extractionType: "field"
+            sourceFieldName: "gen_ai.response.model"
 
-    # 4b. Map cache token usage to gen_ai.prompt_caching
-    - id: "openinference-cache-tokens"
+    - id: "openinference-token-usage-input-metric"
       enabled: true
-      matcher: "isNotNull(`llm.token_count.prompt_details.cache_read`) OR isNotNull(`llm.token_count.prompt_details.cache_write`)"
-      type: "dql"
-      description: "Map OpenInference cache token usage to gen_ai.prompt_caching"
-      dql:
-        script: |
-          fieldsAdd `gen_ai.prompt_caching` = if(toDouble(`llm.token_count.prompt_details.cache_read`) > 0, "read",
-                                              else: if(toDouble(`llm.token_count.prompt_details.cache_write`) > 0, "write", else: null))
-          | fieldsRemove `llm.token_count.prompt_details.cache_read`, `llm.token_count.prompt_details.cache_write`
+      matcher: "isNotNull(`gen_ai.usage.input_tokens`)"
+      type: "samplingAwareValueMetric"
+      description: "Extract gen_ai.client.token.usage (input tokens)"
+      samplingAwareValueMetric:
+        metricKey: "gen_ai.client.token.usage"
+        measurement: "field"
+        field: "gen_ai.usage.input_tokens"
+        aggregation: "enabled"
+        sampling: "enabled"
+        dimensions:
+          - extractionType: "constant"
+            constantFieldName: "gen_ai.token.type"
+            constantValue: "input"
+          - extractionType: "field"
+            sourceFieldName: "service.name"
+          - extractionType: "field"
+            sourceFieldName: "gen_ai.operation.name"
+          - extractionType: "field"
+            sourceFieldName: "gen_ai.provider.name"
+          - extractionType: "field"
+            sourceFieldName: "gen_ai.request.model"
+          - extractionType: "field"
+            sourceFieldName: "gen_ai.response.model"
 
-    # 5. Copy request parameters to gen_ai.request.*
-    - id: "openinference-request-params"
+    - id: "openinference-token-usage-output-metric"
       enabled: true
-      matcher: "true"
-      type: "fieldsRename"
-      description: "Copy OpenInference request parameters to official gen_ai.request.*"
-      fieldsRename:
-        fields:
-          - fromName: "llm.temperature"
-            toName: "gen_ai.request.temperature"
-          - fromName: "llm.max_tokens"
-            toName: "gen_ai.request.max_tokens"
-          - fromName: "llm.top_p"
-            toName: "gen_ai.request.top_p"
-
-    # 6. Map response metadata and set gen_ai.system for Azure
-    - id: "openinference-response-mapping"
-      enabled: true
-      matcher: "isNotNull(llm.token_count.total) OR isNotNull(llm.model_name)"
-      type: "dql"
-      description: "Map LLM response metadata to official attributes"
-      dql:
-        script: |
-          fieldsAdd gen_ai.response.model = gen_ai.request.model,
-            gen_ai.system = if(gen_ai.provider.name == "azure", "azure.ai.openai", else: null)
-
-    # 7. Set operation name to "embeddings" for Embedding spans
-    - id: "openinference-embedding-op-name"
-      enabled: true
-      matcher: "isNotNull(embedding.model_name)"
-      type: "fieldsAdd"
-      description: "Set operation name to embeddings for Embedding spans"
-      fieldsAdd:
-        fields:
-          - name: "gen_ai.operation.name"
-            value: "embeddings"
-
-    # 8. Map embedding attributes
-    - id: "openinference-embedding-attributes"
-      enabled: true
-      matcher: "isNotNull(embedding.model_name)"
-      type: "fieldsRename"
-      description: "Map OpenInference embedding attributes to official gen_ai.*"
-      fieldsRename:
-        fields:
-          - fromName: "embedding.model_name"
-            toName: "gen_ai.request.model"
-          - fromName: "embedding.vector_length"
-            toName: "gen_ai.embeddings.dimension.count"
-
-    # 9. Map reranker model attribute
-    - id: "openinference-reranker-model"
-      enabled: true
-      matcher: "isNotNull(reranker.model_name)"
-      type: "fieldsRename"
-      description: "Map OpenInference reranker attributes"
-      fieldsRename:
-        fields:
-          - fromName: "reranker.model_name"
-            toName: "gen_ai.request.model"
-
-    # 10. Map agent name to gen_ai.agent.name
-    - id: "openinference-agent-mapping"
-      enabled: true
-      matcher: "true"
-      type: "fieldsRename"
-      description: "Map OpenInference agent name to official attribute"
-      fieldsRename:
-        fields:
-          - fromName: "agent.name"
-            toName: "gen_ai.agent.name"
-
-    # 11. Map tool attributes to gen_ai.tool.*
-    - id: "openinference-tool-mapping"
-      enabled: true
-      matcher: "isNotNull(tool.name)"
-      type: "fieldsRename"
-      description: "Map OpenInference tool attributes"
-      fieldsRename:
-        fields:
-          - fromName: "tool.name"
-            toName: "gen_ai.tool.name"
-          - fromName: "tool.description"
-            toName: "gen_ai.tool.description"
-
-    # 11b. Map guardrail validator_name to gen_ai.guardrail.name
-    - id: "openinference-guardrail-details"
-      enabled: true
-      matcher: "isNotNull(validator_name)"
-      type: "fieldsRename"
-      description: "Rename OpenInference validator_name to namespaced gen_ai.guardrail.name"
-      fieldsRename:
-        fields:
-          - fromName: "validator_name"
-            toName: "gen_ai.guardrail.name"
-
-    # 11c. Map prompt template attributes to gen_ai.prompt.template.*
-    - id: "openinference-prompt-template"
-      enabled: true
-      matcher: "isNotNull(`llm.prompt_template.template`) OR isNotNull(`llm.prompt_template.variables`) OR isNotNull(`llm.prompt_template.version`)"
-      type: "fieldsRename"
-      description: "Map OpenInference prompt template attributes to gen_ai.prompt.template.*"
-      fieldsRename:
-        fields:
-          - fromName: "llm.prompt_template.template"
-            toName: "gen_ai.prompt.template"
-          - fromName: "llm.prompt_template.variables"
-            toName: "gen_ai.prompt.template.variables"
-          - fromName: "llm.prompt_template.version"
-            toName: "gen_ai.prompt.template.version"
-
-    # 12. Tag source SDK
-    - id: "openinference-source-metadata"
-      enabled: true
-      matcher: "true"
-      type: "dql"
-      description: "Tag source SDK as openinference"
-      dql:
-        script: |
-          fieldsAdd `ai.observability.source` = "openinference"
-
-    # 12b. Remove leftover OpenInference source attributes
-    - id: "openinference-cleanup"
-      enabled: true
-      matcher: "true"
-      type: "fieldsRemove"
-      description: "Remove leftover OpenInference source attributes after mapping"
-      fieldsRemove:
-        fields:
-          - "openinference.span.kind"
-          - "llm.invocation_parameters"
-          - "llm.prompt_template.template"
-          - "llm.prompt_template.variables"
-          - "llm.prompt_template.version"
-          - "llm.token_count.total"
-          - "llm.token_count.prompt_details.audio"
-          - "llm.token_count.prompt_details.cache_read"
-          - "llm.token_count.prompt_details.cache_write"
-          - "llm.token_count.completion_details.audio"
-          - "llm.token_count.completion_details.reasoning"
-          - "llm.output_messages.0.message.role"
-          - "llm.output_messages.0.message.contents.0.text"
-          - "input.mime_type"
-          - "output.mime_type"
-
-    # 13. Extract gen_ai.prompt.0.* from Google ADK input.value JSON blob
-    # Google ADK OpenInference stores the full request as a JSON string in input.value.
-    # Structure: {"new_message": {"parts": [{"text": "..."}], "role": "user"}, ...}
-    # Uses a GROK pattern to extract the first "text":"..." value — avoids JSON type access
-    # (OpenPipeline DQL does not allow string literals as map keys: field["key"] is invalid).
-    # Must run before step 15 which removes input.value.
-    - id: "openinference-extract-prompt-from-input-value"
-      enabled: true
-      matcher: "isNotNull(`input.value`)"
-      type: "dql"
-      description: "Extract gen_ai.prompt.0.role / gen_ai.prompt.0.content from input.value JSON"
-      dql:
-        script: |
-          parse `input.value`, "LD '\"text\":\"' STRING:promptText '\"'"
-          | fieldsAdd `gen_ai.prompt.0.content` = promptText,
-                      `gen_ai.prompt.0.role` = "user"
-          | fieldsRemove promptText
-
-    # 14. Extract gen_ai.completion.0.* from Google ADK output.value JSON blob
-    # Structure: {"content": {"parts": [{"text": "..."}], "role": "model"}, "finish_reason": "STOP", ...}
-    # Same GROK approach — extracts the first "text":"..." value from the response blob.
-    # Must run before step 15 which removes output.value.
-    - id: "openinference-extract-completion-from-output-value"
-      enabled: true
-      matcher: "isNotNull(`output.value`)"
-      type: "dql"
-      description: "Extract gen_ai.completion.0.role / gen_ai.completion.0.content from output.value JSON"
-      dql:
-        script: |
-          parse `output.value`, "LD '\"text\":\"' STRING:completionText '\"'"
-          | fieldsAdd `gen_ai.completion.0.content` = completionText,
-                      `gen_ai.completion.0.role` = "model",
-                      `gen_ai.response.finish_reasons` = if(isNull(`gen_ai.response.finish_reasons`), "STOP")
-          | fieldsRemove completionText
-
-    # 15. Map input.value/output.value to gen_ai.* for Prompts list view
-    - id: "openinference-input-output-fallback"
-      enabled: true
-      matcher: "true"
-      type: "dql"
-      description: "Map input.value/output.value to gen_ai.* so spans appear in Prompts list"
-      dql:
-        script: |
-          fieldsAdd `gen_ai.input.messages` = `input.value`, `gen_ai.output.messages` = `output.value`
-          | fieldsRemove `input.value`, `output.value`
-
-    # 16. Map input message[0] to gen_ai.prompt.0.* (role + content) for non-ADK instrumentations
-    # that use flat llm.input_messages.{i}.message.contents.{j}.text paths.
-    # Skipped when gen_ai.prompt.0.role is already populated (e.g. by step 13).
-    - id: "openinference-prompt-message-mapping"
-      enabled: true
-      matcher: "isNotNull(`llm.input_messages.0.message.role`) AND isNull(`gen_ai.prompt.0.role`)"
-      type: "fieldsRename"
-      description: "Map OpenInference first input message to gen_ai.prompt.0.role / gen_ai.prompt.0.content"
-      fieldsRename:
-        fields:
-          - fromName: "llm.input_messages.0.message.role"
-            toName: "gen_ai.prompt.0.role"
-          - fromName: "llm.input_messages.0.message.contents.0.text"
-            toName: "gen_ai.prompt.0.content"
-
-    # 16b. Extract system prompt from gen_ai.prompt.0 into gen_ai.system_instructions
-    - id: "openinference-system-instructions"
-      enabled: true
-      matcher: "isNotNull(`gen_ai.prompt.0.role`)"
-      type: "dql"
-      description: "Copy system message content into gen_ai.system_instructions"
-      dql:
-        script: |
-          fieldsAdd `gen_ai.system_instructions` = if(
-            `gen_ai.prompt.0.role` == "system",
-            `gen_ai.prompt.0.content`
-          )
+      matcher: "isNotNull(`gen_ai.usage.output_tokens`)"
+      type: "samplingAwareValueMetric"
+      description: "Extract gen_ai.client.token.usage (output tokens)"
+      samplingAwareValueMetric:
+        metricKey: "gen_ai.client.token.usage"
+        measurement: "field"
+        field: "gen_ai.usage.output_tokens"
+        aggregation: "enabled"
+        sampling: "enabled"
+        dimensions:
+          - extractionType: "constant"
+            constantFieldName: "gen_ai.token.type"
+            constantValue: "output"
+          - extractionType: "field"
+            sourceFieldName: "service.name"
+          - extractionType: "field"
+            sourceFieldName: "gen_ai.operation.name"
+          - extractionType: "field"
+            sourceFieldName: "gen_ai.provider.name"
+          - extractionType: "field"
+            sourceFieldName: "gen_ai.request.model"
+          - extractionType: "field"
+            sourceFieldName: "gen_ai.response.model"

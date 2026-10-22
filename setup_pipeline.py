@@ -93,11 +93,25 @@ def build_pipeline_payload(config: dict[str, Any]) -> dict[str, Any]:
             p["fieldsRemove"] = proc["fieldsRemove"]
         processors.append(p)
 
-    return {
+    value: dict[str, Any] = {
         "customId": config["customId"],
         "displayName": config["displayName"],
         "processing": {"processors": processors},
     }
+
+    # Metric extraction processors are passed through as-is: each one carries a
+    # type-specific block (e.g. samplingAwareValueMetric) that the YAML already
+    # shapes to match the Settings schema, so re-mapping per type would only
+    # risk silently dropping fields.
+    metric_procs = config.get("metricExtraction", {}).get("processors", [])
+    if metric_procs:
+        value["metricExtraction"] = {
+            "processors": [
+                {"description": "", **proc} for proc in metric_procs
+            ]
+        }
+
+    return value
 
 
 def _raise_with_body(resp: requests.Response) -> None:
